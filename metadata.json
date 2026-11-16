@@ -2,5 +2,7 @@
   "name": "SKEIN SCENE – Handmade Crochet & Custom Gifting",
   "description": "Boutique handmade crochet flowers, keychains, plushies, accessories, and custom crochet gifting studio in Laggere, Bengaluru.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
