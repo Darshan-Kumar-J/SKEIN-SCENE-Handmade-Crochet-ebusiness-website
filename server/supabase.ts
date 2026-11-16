@@ -1,11 +1,21 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { Appointment, CustomRequest, Order } from '../src/types.ts';
+import type {
+  Appointment,
+  CustomOrderStatus,
+  CustomRequest,
+  Order,
+  OrderItem,
+  OrderStatus,
+  PaymentStatus,
+  SavedAddress,
+} from '../src/types.ts';
 
 const PROJECT_ID = process.env.SUPABASE_PROJECT_ID || 'gjkpbkwuxjidywmtijmf';
 const SUPABASE_URL = process.env.SUPABASE_URL || `https://${PROJECT_ID}.supabase.co`;
 const SUPABASE_PUBLISHABLE_KEY =
   process.env.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_b4KQ_vv_KpuiMhnafmy14A_rMWH5EnX';
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const ADMIN_RPC_KEY = process.env.SUPABASE_ADMIN_RPC_KEY || 'skn_adm_9c4e7a2b1d8f5036e9a4c2b7';
 
 let publicClient: SupabaseClient | null = null;
 let adminClient: SupabaseClient | null = null;
@@ -45,6 +55,64 @@ interface SupabaseAppointmentRow {
   created_at: string;
 }
 
+interface SupabaseOrderRow {
+  id: string;
+  order_number: string;
+  user_id?: string | null;
+  customer_name: string;
+  customer_email: string;
+  customer_phone: string;
+  fulfillment_method: Order['fulfillmentMethod'];
+  shipping_address?: SavedAddress | null;
+  items?: OrderItem[] | null;
+  subtotal: number;
+  discount_amount: number;
+  coupon_code?: string | null;
+  shipping_fee: number;
+  tax_amount: number;
+  total_amount: number;
+  gift_wrap: boolean;
+  gift_message?: string | null;
+  status: OrderStatus;
+  payment_status: PaymentStatus;
+  payment_method?: string | null;
+  razorpay_order_id: string;
+  razorpay_payment_id?: string | null;
+  courier_name?: string | null;
+  tracking_number?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface SupabaseCustomRequestRow {
+  id: string;
+  booking_code: string;
+  user_id?: string | null;
+  customer_name: string;
+  email: string;
+  phone: string;
+  category: string;
+  product_type: string;
+  preferred_colors?: string[] | null;
+  preferred_size?: string | null;
+  quantity: number;
+  budget_range?: string | null;
+  required_date?: string | null;
+  gift_wrapping: boolean;
+  personalized_message?: string | null;
+  design_instructions: string;
+  reference_image_url?: string | null;
+  status: CustomOrderStatus;
+  quoted_total?: number | null;
+  advance_amount?: number | null;
+  advance_paid: boolean;
+  advance_razorpay_payment_id?: string | null;
+  admin_notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 function toAppointment(row: SupabaseAppointmentRow): Appointment {
   return {
     id: row.id,
@@ -60,6 +128,76 @@ function toAppointment(row: SupabaseAppointmentRow): Appointment {
     status: row.status,
     adminNote: row.admin_note || undefined,
     createdAt: row.created_at,
+  };
+}
+
+function toOrder(row: SupabaseOrderRow): Order {
+  return {
+    id: row.id,
+    orderNumber: row.order_number,
+    userId: row.user_id || undefined,
+    customerName: row.customer_name,
+    customerEmail: row.customer_email,
+    customerPhone: row.customer_phone,
+    fulfillmentMethod: row.fulfillment_method === 'pickup' ? 'pickup' : 'standard',
+    shippingAddress: row.shipping_address || undefined,
+    items: Array.isArray(row.items) ? row.items : [],
+    subtotal: Number(row.subtotal) || 0,
+    discountAmount: Number(row.discount_amount) || 0,
+    couponCode: row.coupon_code || undefined,
+    shippingFee: Number(row.shipping_fee) || 0,
+    taxAmount: Number(row.tax_amount) || 0,
+    totalAmount: Number(row.total_amount) || 0,
+    giftWrap: Boolean(row.gift_wrap),
+    giftMessage: row.gift_message || undefined,
+    status: row.status,
+    paymentStatus: row.payment_status,
+    paymentMethod: row.payment_method || undefined,
+    razorpayOrderId: row.razorpay_order_id,
+    razorpayPaymentId: row.razorpay_payment_id || undefined,
+    courierName: row.courier_name || undefined,
+    trackingNumber: row.tracking_number || undefined,
+    notes: row.notes || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
+  };
+}
+
+function toCustomRequest(row: SupabaseCustomRequestRow): CustomRequest {
+  return {
+    id: row.id,
+    bookingCode: row.booking_code,
+    userId: row.user_id || undefined,
+    customerName: row.customer_name,
+    email: row.email,
+    phone: row.phone,
+    category: row.category,
+    productType: row.product_type,
+    preferredColors: Array.isArray(row.preferred_colors) ? row.preferred_colors : [],
+    preferredSize: row.preferred_size || 'Medium',
+    quantity: Number(row.quantity) || 1,
+    budgetRange: row.budget_range || '₹1,000 – ₹2,500',
+    requiredDate: row.required_date || '',
+    giftWrapping: Boolean(row.gift_wrapping),
+    personalizedMessage: row.personalized_message || '',
+    designInstructions: row.design_instructions || '',
+    referenceImageUrl: row.reference_image_url || undefined,
+    status: row.status,
+    quotedTotal: row.quoted_total !== null && row.quoted_total !== undefined ? Number(row.quoted_total) : undefined,
+    advanceAmount:
+      row.advance_amount !== null && row.advance_amount !== undefined ? Number(row.advance_amount) : undefined,
+    advancePaid: Boolean(row.advance_paid),
+    advanceRazorpayPaymentId: row.advance_razorpay_payment_id || undefined,
+    adminNotes: row.admin_notes || undefined,
+    timeline: [
+      {
+        status: row.status,
+        note: `Current status synced from database (${row.status}).`,
+        timestamp: row.updated_at || row.created_at,
+      },
+    ],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
   };
 }
 
@@ -131,44 +269,278 @@ export async function getBookedSlotCountsFromSupabase(
   }
 }
 
+export interface SupabaseFetchResult<T> {
+  ok: boolean;
+  items: T[];
+  mode: 'service_role' | 'rpc' | 'unavailable';
+  reason?: string;
+}
+
+export async function listAppointmentsFromSupabaseDetailed(): Promise<SupabaseFetchResult<Appointment>> {
+  try {
+    const admin = getSupabaseAdminClient();
+    if (admin) {
+      const { data, error } = await admin
+        .from('appointments')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        return {
+          ok: true,
+          items: (data as SupabaseAppointmentRow[]).map(toAppointment),
+          mode: 'service_role',
+        };
+      }
+    }
+
+    const client = getSupabaseClient();
+    const { data: rpcData, error: rpcError } = await client.rpc('admin_fetch_appointments', {
+      p_admin_key: ADMIN_RPC_KEY,
+    });
+
+    if (!rpcError && Array.isArray(rpcData)) {
+      return {
+        ok: true,
+        items: (rpcData as SupabaseAppointmentRow[]).map(toAppointment),
+        mode: 'rpc',
+      };
+    }
+
+    return {
+      ok: false,
+      items: [],
+      mode: 'unavailable',
+      reason: rpcError?.message || 'Admin read RPC not configured',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      items: [],
+      mode: 'unavailable',
+      reason: err instanceof Error ? err.message : 'Connection error',
+    };
+  }
+}
+
+export async function listAppointmentsFromSupabase(): Promise<Appointment[] | null> {
+  const res = await listAppointmentsFromSupabaseDetailed();
+  return res.ok ? res.items : null;
+}
+
+export async function listOrdersFromSupabaseDetailed(): Promise<SupabaseFetchResult<Order>> {
+  try {
+    const admin = getSupabaseAdminClient();
+    if (admin) {
+      const { data, error } = await admin
+        .from('orders')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        return {
+          ok: true,
+          items: (data as SupabaseOrderRow[]).map(toOrder),
+          mode: 'service_role',
+        };
+      }
+    }
+
+    const client = getSupabaseClient();
+    const { data: rpcData, error: rpcError } = await client.rpc('admin_fetch_orders', {
+      p_admin_key: ADMIN_RPC_KEY,
+    });
+
+    if (!rpcError && Array.isArray(rpcData)) {
+      return {
+        ok: true,
+        items: (rpcData as SupabaseOrderRow[]).map(toOrder),
+        mode: 'rpc',
+      };
+    }
+
+    return {
+      ok: false,
+      items: [],
+      mode: 'unavailable',
+      reason: rpcError?.message || 'Admin orders read RPC not configured',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      items: [],
+      mode: 'unavailable',
+      reason: err instanceof Error ? err.message : 'Connection error',
+    };
+  }
+}
+
+export async function listCustomRequestsFromSupabaseDetailed(): Promise<SupabaseFetchResult<CustomRequest>> {
+  try {
+    const admin = getSupabaseAdminClient();
+    if (admin) {
+      const { data, error } = await admin
+        .from('custom_requests')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (!error && Array.isArray(data)) {
+        return {
+          ok: true,
+          items: (data as SupabaseCustomRequestRow[]).map(toCustomRequest),
+          mode: 'service_role',
+        };
+      }
+    }
+
+    const client = getSupabaseClient();
+    const { data: rpcData, error: rpcError } = await client.rpc('admin_fetch_custom_requests', {
+      p_admin_key: ADMIN_RPC_KEY,
+    });
+
+    if (!rpcError && Array.isArray(rpcData)) {
+      return {
+        ok: true,
+        items: (rpcData as SupabaseCustomRequestRow[]).map(toCustomRequest),
+        mode: 'rpc',
+      };
+    }
+
+    return {
+      ok: false,
+      items: [],
+      mode: 'unavailable',
+      reason: rpcError?.message || 'Admin custom requests read RPC not configured',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      items: [],
+      mode: 'unavailable',
+      reason: err instanceof Error ? err.message : 'Connection error',
+    };
+  }
+}
+
 export async function updateAppointmentInSupabase(
   id: string,
-  patch: Partial<Appointment>
+  patch: Partial<Appointment>,
+  fullAppointment?: Appointment
 ): Promise<boolean> {
-  const admin = getSupabaseAdminClient();
-  if (!admin) return false;
   try {
-    const updateBody: Record<string, unknown> = {};
-    if (patch.status !== undefined) updateBody.status = patch.status;
-    if (patch.date !== undefined) updateBody.date = patch.date;
-    if (patch.timeSlot !== undefined) updateBody.time_slot = patch.timeSlot;
-    if (patch.adminNote !== undefined) updateBody.admin_note = patch.adminNote;
+    const admin = getSupabaseAdminClient();
+    if (admin) {
+      const updateBody: Record<string, unknown> = {};
+      if (patch.customerName !== undefined) updateBody.customer_name = patch.customerName;
+      if (patch.email !== undefined) updateBody.email = patch.email;
+      if (patch.phone !== undefined) updateBody.phone = patch.phone;
+      if (patch.appointmentType !== undefined) updateBody.appointment_type = patch.appointmentType;
+      if (patch.status !== undefined) updateBody.status = patch.status;
+      if (patch.date !== undefined) updateBody.date = patch.date;
+      if (patch.timeSlot !== undefined) updateBody.time_slot = patch.timeSlot;
+      if (patch.notes !== undefined) updateBody.notes = patch.notes;
+      if (patch.adminNote !== undefined) updateBody.admin_note = patch.adminNote;
 
-    const { error } = await admin.from('appointments').update(updateBody).eq('id', id);
-    return !error;
+      const { error } = await admin.from('appointments').update(updateBody).eq('id', id);
+      if (!error) return true;
+    }
+
+    if (fullAppointment) {
+      const client = getSupabaseClient();
+      const { error: rpcError } = await client.rpc('admin_update_appointment', {
+        p_admin_key: ADMIN_RPC_KEY,
+        p_id: fullAppointment.id,
+        p_customer_name: fullAppointment.customerName,
+        p_email: fullAppointment.email,
+        p_phone: fullAppointment.phone,
+        p_appointment_type: fullAppointment.appointmentType,
+        p_date: fullAppointment.date,
+        p_time_slot: fullAppointment.timeSlot,
+        p_notes: fullAppointment.notes || '',
+        p_status: fullAppointment.status,
+        p_admin_note: fullAppointment.adminNote || '',
+      });
+      if (!rpcError) return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
-export async function listAppointmentsFromSupabase(): Promise<Appointment[] | null> {
-  const admin = getSupabaseAdminClient();
-  if (!admin) return null;
-  try {
-    const { data, error } = await admin
-      .from('appointments')
-      .select('*')
-      .order('created_at', { ascending: false });
-    if (error || !Array.isArray(data)) return null;
-    return (data as SupabaseAppointmentRow[]).map(toAppointment);
-  } catch {
-    return null;
-  }
-}
-
 export async function syncOrderToSupabase(order: Order): Promise<{ ok: boolean; reason?: string }> {
   try {
-    const client = getSupabaseAdminClient() || getSupabaseClient();
+    const admin = getSupabaseAdminClient();
+    if (admin) {
+      const { error: adminRpcErr } = await admin.rpc('admin_update_order', {
+        p_admin_key: ADMIN_RPC_KEY,
+        p_id: order.id,
+        p_customer_name: order.customerName,
+        p_customer_email: order.customerEmail,
+        p_customer_phone: order.customerPhone,
+        p_fulfillment_method: order.fulfillmentMethod,
+        p_shipping_address: order.shippingAddress || null,
+        p_gift_wrap: order.giftWrap,
+        p_gift_message: order.giftMessage || null,
+        p_status: order.status,
+        p_payment_status: order.paymentStatus,
+        p_courier_name: order.courierName || null,
+        p_tracking_number: order.trackingNumber || null,
+        p_notes: order.notes || null,
+        p_updated_at: order.updatedAt,
+      });
+      if (!adminRpcErr) return { ok: true };
+    }
+
+    const client = admin || getSupabaseClient();
+
+    // Try full admin update RPC when editing an existing order
+    const { error: adminRpcError } = await client.rpc('admin_update_order', {
+      p_admin_key: ADMIN_RPC_KEY,
+      p_id: order.id,
+      p_customer_name: order.customerName,
+      p_customer_email: order.customerEmail,
+      p_customer_phone: order.customerPhone,
+      p_fulfillment_method: order.fulfillmentMethod,
+      p_shipping_address: order.shippingAddress || null,
+      p_gift_wrap: order.giftWrap,
+      p_gift_message: order.giftMessage || null,
+      p_status: order.status,
+      p_payment_status: order.paymentStatus,
+      p_courier_name: order.courierName || null,
+      p_tracking_number: order.trackingNumber || null,
+      p_notes: order.notes || null,
+      p_updated_at: order.updatedAt,
+    });
+    if (!adminRpcError) {
+      // Also ensure row exists if this was a brand-new order insert
+      const { error: upsertErr } = await client.rpc('sync_order_confirmation', {
+        p_id: order.id,
+        p_order_number: order.orderNumber,
+        p_user_id: order.userId || null,
+        p_customer_name: order.customerName,
+        p_customer_email: order.customerEmail,
+        p_customer_phone: order.customerPhone,
+        p_fulfillment_method: order.fulfillmentMethod,
+        p_shipping_address: order.shippingAddress || null,
+        p_items: order.items,
+        p_subtotal: order.subtotal,
+        p_discount_amount: order.discountAmount,
+        p_coupon_code: order.couponCode || null,
+        p_shipping_fee: order.shippingFee,
+        p_tax_amount: order.taxAmount,
+        p_total_amount: order.totalAmount,
+        p_gift_wrap: order.giftWrap,
+        p_gift_message: order.giftMessage || null,
+        p_status: order.status,
+        p_payment_status: order.paymentStatus,
+        p_payment_method: order.paymentMethod || null,
+        p_razorpay_order_id: order.razorpayOrderId,
+        p_razorpay_payment_id: order.razorpayPaymentId || null,
+        p_courier_name: order.courierName || null,
+        p_tracking_number: order.trackingNumber || null,
+        p_created_at: order.createdAt,
+        p_updated_at: order.updatedAt,
+      });
+      if (!upsertErr) return { ok: true };
+    }
 
     // Try privacy-safe SECURITY DEFINER upsert RPC first so both initial checkout and payment confirmation sync cleanly
     const { error: rpcError } = await client.rpc('sync_order_confirmation', {
@@ -248,6 +620,27 @@ export async function syncCustomRequestToSupabase(
 ): Promise<{ ok: boolean; reason?: string }> {
   try {
     const client = getSupabaseAdminClient() || getSupabaseClient();
+
+    const { error: adminRpcErr } = await client.rpc('admin_update_custom_request', {
+      p_admin_key: ADMIN_RPC_KEY,
+      p_id: custom.id,
+      p_customer_name: custom.customerName,
+      p_email: custom.email,
+      p_phone: custom.phone,
+      p_product_type: custom.productType,
+      p_preferred_colors: custom.preferredColors,
+      p_preferred_size: custom.preferredSize,
+      p_quantity: custom.quantity,
+      p_required_date: custom.requiredDate || null,
+      p_design_instructions: custom.designInstructions,
+      p_status: custom.status,
+      p_quoted_total: custom.quotedTotal ?? null,
+      p_advance_amount: custom.advanceAmount ?? null,
+      p_advance_paid: custom.advancePaid,
+      p_admin_notes: custom.adminNotes || null,
+      p_updated_at: custom.updatedAt,
+    });
+
     const { error: rpcError } = await client.rpc('sync_custom_request', {
       p_id: custom.id,
       p_booking_code: custom.bookingCode,
@@ -276,7 +669,7 @@ export async function syncCustomRequestToSupabase(
       p_updated_at: custom.updatedAt,
     });
 
-    if (!rpcError) return { ok: true };
+    if (!rpcError || !adminRpcErr) return { ok: true };
 
     const { error: insertError } = await client.from('custom_requests').insert({
       id: custom.id,

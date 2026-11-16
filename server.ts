@@ -19,7 +19,9 @@ import { getDb, hashPassword, saveDb, UPLOADS_DIR, verifyPassword } from './serv
 import { renderOrderInvoiceHtml } from './server/invoice.ts';
 import {
   getBookedSlotCountsFromSupabase,
-  listAppointmentsFromSupabase,
+  listAppointmentsFromSupabaseDetailed,
+  listCustomRequestsFromSupabaseDetailed,
+  listOrdersFromSupabaseDetailed,
   saveAppointmentToSupabase,
   syncCustomRequestToSupabase,
   syncOrderToSupabase,
@@ -1101,16 +1103,99 @@ app.get('/api/appointments/track/:code', (req, res) => {
 
 // ---------------- ADMIN DASHBOARD APIS ----------------
 
-app.get('/api/admin/overview', requireAdmin, async (_req, res) => {
+async function syncBookingsFromSupabase() {
   const db = getDb();
-  const paidOrders = db.orders.filter((o) => o.paymentStatus === 'paid');
+  const [ordersRes, customRes, aptsRes] = await Promise.all([
+    listOrdersFromSupabaseDetailed(),
+    listCustomRequestsFromSupabaseDetailed(),
+    listAppointmentsFromSupabaseDetailed(),
+  ]);
+
+  let changed = false;
+
+  if (ordersRes.ok) {
+    const localById = new Map(db.orders.map((o) => [o.id, o]));
+    for (const remote of ordersRes.items) {
+      const local = localById.get(remote.id);
+      if (!local) {
+        localById.set(remote.id, remote);
+        changed = true;
+      } else if (new Date(remote.updatedAt).getTime() > new Date(local.updatedAt).getTime()) {
+        localById.set(remote.id, { ...local, ...remote });
+        changed = true;
+      }
+    }
+    db.orders = Array.from(localById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  if (customRes.ok) {
+    const localById = new Map(db.customRequests.map((c) => [c.id, c]));
+    for (const remote of customRes.items) {
+      const local = localById.get(remote.id);
+      if (!local) {
+        localById.set(remote.id, remote);
+        changed = true;
+      } else if (new Date(remote.updatedAt).getTime() > new Date(local.updatedAt).getTime()) {
+        localById.set(remote.id, {
+          ...local,
+          ...remote,
+          timeline: local.timeline?.length ? local.timeline : remote.timeline,
+        });
+        changed = true;
+      }
+    }
+    db.customRequests = Array.from(localById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  if (aptsRes.ok) {
+    const localById = new Map(db.appointments.map((a) => [a.id, a]));
+    for (const remote of aptsRes.items) {
+      const local = localById.get(remote.id);
+      if (!local) {
+        localById.set(remote.id, remote);
+        changed = true;
+      } else {
+        localById.set(remote.id, { ...local, ...remote });
+        changed = true;
+      }
+    }
+    db.appointments = Array.from(localById.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  if (changed) {
+    saveDb(db);
+  }
+
+  return {
+    db,
+    supabaseStatus: {
+      ordersConnected: ordersRes.ok,
+      customConnected: customRes.ok,
+      appointmentsConnected: aptsRes.ok,
+      mode: ordersRes.ok ? ordersRes.mode : aptsRes.ok ? aptsRes.mode : customRes.mode,
+      remoteCounts: {
+        orders: ordersRes.items.length,
+        customRequests: customRes.items.length,
+        appointments: aptsRes.items.length,
+      },
+      reason: !ordersRes.ok ? ordersRes.reason : !aptsRes.ok ? aptsRes.reason : undefined,
+    },
+  };
+}
+
+app.get('/api/admin/overview', requireAdmin, async (_req, res) => {
+  const { db, supabaseStatus } = await syncBookingsFromSupabase();
+  const paidOrders = db.orders.filter((o) => o.paymentStatus === 'paid' && o.status !== 'Cancelled');
   const orderRevenue = paidOrders.reduce((sum, o) => sum + o.totalAmount, 0);
   const advanceRevenue = db.customRequests
-    .filter((c) => c.advancePaid)
+    .filter((c) => c.advancePaid && c.status !== 'Cancelled')
     .reduce((sum, c) => sum + (c.advanceAmount || 0), 0);
-
-  const remoteAppointments = await listAppointmentsFromSupabase();
-  const mergedAppointments = remoteAppointments && remoteAppointments.length > 0 ? remoteAppointments : db.appointments;
 
   const lowStockProducts = db.products.filter((p) => p.stock <= 5);
   const customers = db.users.filter((u) => u.role === 'customer').map(publicUserResponse);
@@ -1119,9 +1204,11 @@ app.get('/api/admin/overview', requireAdmin, async (_req, res) => {
     metrics: {
       totalSales: orderRevenue + advanceRevenue,
       totalOrders: db.orders.length,
-      pendingOrders: db.orders.filter((o) => o.status === 'Pending Payment' || o.status === 'Confirmed' || o.status === 'Crafting').length,
+      pendingOrders: db.orders.filter(
+        (o) => o.status === 'Pending Payment' || o.status === 'Confirmed' || o.status === 'Crafting'
+      ).length,
       customRequestsCount: db.customRequests.length,
-      confirmedBookingsCount: mergedAppointments.filter((a) => a.status === 'Approved').length,
+      confirmedBookingsCount: db.appointments.filter((a) => a.status === 'Approved').length,
       lowStockCount: lowStockProducts.length,
       subscribersCount: db.subscribers.length,
     },
@@ -1130,7 +1217,7 @@ app.get('/api/admin/overview', requireAdmin, async (_req, res) => {
     categories: db.categories,
     orders: db.orders,
     customRequests: db.customRequests,
-    appointments: mergedAppointments,
+    appointments: db.appointments,
     coupons: db.coupons,
     testimonials: db.testimonials,
     reviews: db.reviews,
@@ -1139,7 +1226,13 @@ app.get('/api/admin/overview', requireAdmin, async (_req, res) => {
     notifications: db.notifications,
     customers,
     settings: db.settings,
+    supabaseStatus,
   });
+});
+
+app.post('/api/admin/sync-supabase', requireAdmin, async (_req, res) => {
+  const { supabaseStatus } = await syncBookingsFromSupabase();
+  res.json({ ok: true, supabaseStatus });
 });
 
 app.post('/api/admin/products', requireAdmin, (req, res) => {
@@ -1224,22 +1317,89 @@ app.put('/api/admin/orders/:id', requireAdmin, async (req, res) => {
     res.status(404).json({ error: 'Order not found.' });
     return;
   }
-  const { status, paymentStatus, courierName, trackingNumber, notes } = req.body as {
-    status?: OrderStatus;
-    paymentStatus?: Order['paymentStatus'];
-    courierName?: string;
-    trackingNumber?: string;
-    notes?: string;
-  };
+  const {
+    customerName,
+    customerEmail,
+    customerPhone,
+    fulfillmentMethod,
+    shippingAddress,
+    giftWrap,
+    giftMessage,
+    status,
+    paymentStatus,
+    courierName,
+    trackingNumber,
+    notes,
+  } = req.body as Partial<Order>;
+
+  if (customerName !== undefined && customerName.trim()) order.customerName = customerName.trim().slice(0, 80);
+  if (customerEmail !== undefined && isValidEmail(customerEmail)) order.customerEmail = customerEmail.trim().toLowerCase();
+  if (customerPhone !== undefined && customerPhone.trim()) order.customerPhone = customerPhone.trim().slice(0, 25);
+  if (fulfillmentMethod === 'standard' || fulfillmentMethod === 'pickup') {
+    order.fulfillmentMethod = fulfillmentMethod;
+  }
+  if (shippingAddress !== undefined) order.shippingAddress = shippingAddress;
+  if (giftWrap !== undefined) order.giftWrap = Boolean(giftWrap);
+  if (giftMessage !== undefined) order.giftMessage = giftMessage.trim().slice(0, 240);
   if (status) order.status = status;
   if (paymentStatus) order.paymentStatus = paymentStatus;
-  if (courierName !== undefined) order.courierName = courierName;
-  if (trackingNumber !== undefined) order.trackingNumber = trackingNumber;
-  if (notes !== undefined) order.notes = notes;
+  if (courierName !== undefined) order.courierName = courierName.trim();
+  if (trackingNumber !== undefined) order.trackingNumber = trackingNumber.trim();
+  if (notes !== undefined) order.notes = notes.trim().slice(0, 800);
   order.updatedAt = new Date().toISOString();
   saveDb(db);
-  await syncOrderToSupabase(order);
-  res.json({ order });
+  const syncResult = await syncOrderToSupabase(order);
+  res.json({ order, supabaseSynced: syncResult.ok });
+});
+
+app.post('/api/admin/orders/:id/cancel', requireAdmin, async (req, res) => {
+  const db = getDb();
+  const order = db.orders.find((o) => o.id === req.params.id);
+  if (!order) {
+    res.status(404).json({ error: 'Order not found.' });
+    return;
+  }
+  const { reason, restoreStock, markRefunded } = req.body as {
+    reason?: string;
+    restoreStock?: boolean;
+    markRefunded?: boolean;
+  };
+
+  const wasPaid = order.paymentStatus === 'paid';
+  const wasActive = order.status !== 'Cancelled' && order.status !== 'Refunded';
+
+  if (wasActive && wasPaid && restoreStock !== false) {
+    for (const item of order.items) {
+      const prod = db.products.find((p) => p.id === item.productId);
+      if (prod) {
+        prod.stock += item.quantity;
+      }
+    }
+  }
+
+  order.status = markRefunded && wasPaid ? 'Refunded' : 'Cancelled';
+  if (markRefunded && wasPaid) {
+    order.paymentStatus = 'refunded';
+  }
+  if (reason?.trim()) {
+    const cancelNote = `Cancelled: ${reason.trim()}`;
+    order.notes = order.notes ? `${order.notes}\n${cancelNote}` : cancelNote;
+  }
+  order.updatedAt = new Date().toISOString();
+
+  db.notifications.unshift({
+    id: `not_${crypto.randomUUID().slice(0, 8)}`,
+    title: `Order ${order.orderNumber} ${order.status}`,
+    detail: reason?.trim() ? `${order.customerName} · ${reason.trim()}` : `Updated by studio admin`,
+    type: 'order',
+    referenceId: order.orderNumber,
+    read: false,
+    createdAt: order.updatedAt,
+  });
+
+  saveDb(db);
+  const syncResult = await syncOrderToSupabase(order);
+  res.json({ order, supabaseSynced: syncResult.ok });
 });
 
 app.put('/api/admin/custom-requests/:id', requireAdmin, async (req, res) => {
@@ -1249,21 +1409,42 @@ app.put('/api/admin/custom-requests/:id', requireAdmin, async (req, res) => {
     res.status(404).json({ error: 'Custom request not found.' });
     return;
   }
-  const { status, quotedTotal, advanceAmount, adminNotes, timelineNote } = req.body as {
-    status?: CustomOrderStatus;
-    quotedTotal?: number;
-    advanceAmount?: number;
-    adminNotes?: string;
-    timelineNote?: string;
-  };
+  const {
+    customerName,
+    email,
+    phone,
+    productType,
+    preferredColors,
+    preferredSize,
+    quantity,
+    requiredDate,
+    designInstructions,
+    status,
+    quotedTotal,
+    advanceAmount,
+    advancePaid,
+    adminNotes,
+    timelineNote,
+  } = req.body as Partial<CustomRequest> & { timelineNote?: string };
+
   const now = new Date().toISOString();
+  if (customerName !== undefined && customerName.trim()) custom.customerName = customerName.trim().slice(0, 80);
+  if (email !== undefined && isValidEmail(email)) custom.email = email.trim().toLowerCase();
+  if (phone !== undefined && phone.trim()) custom.phone = phone.trim().slice(0, 25);
+  if (productType !== undefined && productType.trim()) custom.productType = productType.trim().slice(0, 100);
+  if (Array.isArray(preferredColors)) custom.preferredColors = preferredColors;
+  if (preferredSize !== undefined) custom.preferredSize = preferredSize.trim();
+  if (quantity !== undefined && Number(quantity) > 0) custom.quantity = Math.floor(Number(quantity));
+  if (requiredDate !== undefined) custom.requiredDate = requiredDate.trim();
+  if (designInstructions !== undefined) custom.designInstructions = designInstructions.trim().slice(0, 1500);
   if (quotedTotal !== undefined && Number(quotedTotal) > 0) {
     custom.quotedTotal = Math.round(Number(quotedTotal));
   }
   if (advanceAmount !== undefined && Number(advanceAmount) >= 0) {
     custom.advanceAmount = Math.round(Number(advanceAmount));
   }
-  if (adminNotes !== undefined) custom.adminNotes = adminNotes;
+  if (advancePaid !== undefined) custom.advancePaid = Boolean(advancePaid);
+  if (adminNotes !== undefined) custom.adminNotes = adminNotes.trim();
   if (status && status !== custom.status) {
     custom.status = status;
     custom.timeline.push({
@@ -1275,11 +1456,17 @@ app.put('/api/admin/custom-requests/:id', requireAdmin, async (req, res) => {
           : `Status updated to ${status}.`),
       timestamp: now,
     });
+  } else if (timelineNote?.trim()) {
+    custom.timeline.push({
+      status: custom.status,
+      note: timelineNote.trim(),
+      timestamp: now,
+    });
   }
   custom.updatedAt = now;
   saveDb(db);
-  await syncCustomRequestToSupabase(custom);
-  res.json({ customRequest: custom });
+  const syncResult = await syncCustomRequestToSupabase(custom);
+  res.json({ customRequest: custom, supabaseSynced: syncResult.ok });
 });
 
 app.put('/api/admin/appointments/:id', requireAdmin, async (req, res) => {
@@ -1289,14 +1476,25 @@ app.put('/api/admin/appointments/:id', requireAdmin, async (req, res) => {
     res.status(404).json({ error: 'Appointment not found.' });
     return;
   }
-  const { status, date, timeSlot, adminNote } = req.body as Partial<Appointment>;
+  const { customerName, email, phone, appointmentType, status, date, timeSlot, notes, adminNote } =
+    req.body as Partial<Appointment>;
+  if (customerName !== undefined && customerName.trim()) apt.customerName = customerName.trim().slice(0, 80);
+  if (email !== undefined && isValidEmail(email)) apt.email = email.trim().toLowerCase();
+  if (phone !== undefined && phone.trim()) apt.phone = phone.trim().slice(0, 25);
+  if (appointmentType) apt.appointmentType = appointmentType;
   if (status) apt.status = status;
   if (date) apt.date = date;
   if (timeSlot) apt.timeSlot = timeSlot;
-  if (adminNote !== undefined) apt.adminNote = adminNote;
-  await updateAppointmentInSupabase(apt.id, { status, date, timeSlot, adminNote });
+  if (notes !== undefined) apt.notes = notes.trim().slice(0, 800);
+  if (adminNote !== undefined) apt.adminNote = adminNote.trim().slice(0, 500);
+
+  const synced = await updateAppointmentInSupabase(
+    apt.id,
+    { customerName, email, phone, appointmentType, status, date, timeSlot, notes, adminNote },
+    apt
+  );
   saveDb(db);
-  res.json({ appointment: apt });
+  res.json({ appointment: apt, supabaseSynced: synced });
 });
 
 app.put('/api/admin/settings', requireAdmin, (req, res) => {
